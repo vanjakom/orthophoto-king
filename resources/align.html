@@ -1,0 +1,218 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>orthophoto-king align</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-imageoverlay-rotated@0.2.1/Leaflet.ImageOverlay.Rotated.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; font-family: arial; font-size: 13px; }
+    #map { position: absolute; top: 0; bottom: 0; left: 0; right: 280px; }
+    #panel { position: absolute; top: 0; bottom: 0; right: 0; width: 264px;
+             padding: 8px; overflow-y: auto; background: #f4f4f4; }
+    #panel h3 { margin: 12px 0 4px 0; font-size: 13px; }
+    #panel input[type=number] { width: 100%; box-sizing: border-box; }
+    .row { display: flex; gap: 4px; margin: 2px 0; align-items: center; }
+    .row button { flex: 1; }
+    .row label { flex: 1; }
+    #warning { color: #b00; font-weight: bold; }
+    #status { margin-top: 8px; color: #555; word-break: break-all; }
+    #path { word-break: break-all; color: #555; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <div id="path"></div>
+  <div id="warning"></div>
+
+  <h3>center</h3>
+  <div class="row"><label>longitude</label></div>
+  <input type="number" id="longitude-center" step="0.000001">
+  <div class="row"><label>latitude</label></div>
+  <input type="number" id="latitude-center" step="0.000001">
+  <div class="row"><button id="center-to-map">move to map center</button></div>
+
+  <h3>size</h3>
+  <div class="row"><label>width</label>
+    <button data-action="width" data-sign="-1">-</button>
+    <button data-action="width" data-sign="1">+</button></div>
+  <div class="row"><label>height</label>
+    <button data-action="height" data-sign="-1">-</button>
+    <button data-action="height" data-sign="1">+</button></div>
+  <div class="row"><label>step %</label>
+    <input type="number" id="size-step" value="1" step="0.1" min="0"></div>
+
+  <h3>rotation</h3>
+  <div class="row"><label id="rotation-value"></label>
+    <button data-action="rotate" data-sign="-1">-</button>
+    <button data-action="rotate" data-sign="1">+</button></div>
+  <div class="row"><label>step °</label>
+    <input type="number" id="rotation-step" value="0.5" step="0.1" min="0"></div>
+
+  <h3>image</h3>
+  <div class="row"><label>opacity</label>
+    <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.7"></div>
+
+  <h3></h3>
+  <div class="row">
+    <button id="reset">reset</button>
+    <button id="submit"><b>submit</b></button>
+  </div>
+  <div id="status"></div>
+</div>
+
+<script>
+// image path is rest of url after /tool/align, kept url encoded
+var imagePath = window.location.pathname.substring("/tool/align".length);
+
+var parameters = null;
+var overlay = null;
+
+// optional extra xyz tile layer drawn over base layer, ?tile=<base url>
+// read before map is constructed, it's constructor input
+var urlParameters = new URLSearchParams(window.location.search);
+var tile = urlParameters.get("tile");
+tile = tile ? tile.trim() : null;
+
+// a base url gets the standard xyz tail appended; a url that already names
+// {z} is taken as a full template
+function tileTemplate(tile) {
+  if (tile.indexOf("{z}") >= 0) return tile;
+  return tile.replace(/\/+$/, "") + "/{z}/{x}/{y}.png";
+}
+
+// alignment needs deep zoom, base layers upscale past their native zoom
+var DEEP_ZOOM = 22;
+
+var map = L.map("map");
+var baseLayers = {
+  "OSM": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: DEEP_ZOOM,
+    maxNativeZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }),
+  "Google Satellite": L.tileLayer("http://mt0.google.com/vt/lyrs=s&hl=en&x={x}&y={y}&z={z}",
+                                  { maxZoom: DEEP_ZOOM, maxNativeZoom: 21 })
+};
+baseLayers["Google Satellite"].addTo(map);
+var overlayLayers = {};
+if (tile) {
+  overlayLayers["tile"] = L.tileLayer(tileTemplate(tile), { maxZoom: DEEP_ZOOM }).addTo(map);
+}
+L.control.layers(baseLayers, overlayLayers).addTo(map);
+
+// corners in local frame where longitude is scaled by cos(latitude-center),
+// rotated clockwise around center, see AGENTS.md "Rotation geometry"
+function corners(p) {
+  var k = Math.cos(p["latitude-center"] * Math.PI / 180);
+  var theta = p["rotation"] * Math.PI / 180;
+  var dx = p["longitude-span"] / 2 * k;
+  var dy = p["latitude-span"] / 2;
+  function corner(x, y) {
+    var xr = x * Math.cos(theta) + y * Math.sin(theta);
+    var yr = -x * Math.sin(theta) + y * Math.cos(theta);
+    return L.latLng(p["latitude-center"] + yr, p["longitude-center"] + xr / k);
+  }
+  return [corner(-dx, dy), corner(dx, dy), corner(-dx, -dy)];
+}
+
+function render() {
+  var c = corners(parameters);
+  if (overlay == null) {
+    overlay = L.imageOverlay.rotated(
+      "/data/orthophoto" + imagePath, c[0], c[1], c[2],
+      { opacity: document.getElementById("opacity").value }).addTo(map);
+  } else {
+    overlay.reposition(c[0], c[1], c[2]);
+  }
+  document.getElementById("longitude-center").value = parameters["longitude-center"].toFixed(7);
+  document.getElementById("latitude-center").value = parameters["latitude-center"].toFixed(7);
+  document.getElementById("rotation-value").textContent = parameters["rotation"].toFixed(2) + "°";
+}
+
+function status(message) {
+  document.getElementById("status").textContent = message;
+}
+
+function load(fit) {
+  fetch("/data/retrieve" + imagePath)
+    .then(function (response) {
+      if (!response.ok) throw new Error("retrieve failed: " + response.status);
+      return response.json();
+    })
+    .then(function (image) {
+      parameters = image["parameters"];
+      document.getElementById("path").textContent = image["path"];
+      document.getElementById("warning").textContent =
+        image["tilted"] ? "tilted image, gimbal pitch " + image["gimbal-pitch"] : "";
+      if (fit) {
+        map.fitBounds(L.latLngBounds(corners(parameters)).pad(0.5));
+      }
+      render();
+      status(image["parameters-set"] ? "parameters set" : "parameters from exif");
+    })
+    .catch(function (e) { status(e.message); });
+}
+
+document.querySelectorAll("button[data-action]").forEach(function (button) {
+  button.addEventListener("click", function () {
+    var sign = Number(button.dataset.sign);
+    var sizeStep = Number(document.getElementById("size-step").value) / 100;
+    var rotationStep = Number(document.getElementById("rotation-step").value);
+    switch (button.dataset.action) {
+      case "width":
+        parameters["longitude-span"] *= 1 + sign * sizeStep; break;
+      case "height":
+        parameters["latitude-span"] *= 1 + sign * sizeStep; break;
+      case "rotate":
+        parameters["rotation"] = ((parameters["rotation"] + sign * rotationStep) % 360 + 360) % 360; break;
+    }
+    render();
+  });
+});
+
+["longitude-center", "latitude-center"].forEach(function (id) {
+  document.getElementById(id).addEventListener("change", function (e) {
+    var value = Number(e.target.value);
+    if (!isNaN(value)) {
+      parameters[id] = value;
+      render();
+    }
+  });
+});
+
+document.getElementById("center-to-map").addEventListener("click", function () {
+  var center = map.getCenter();
+  parameters["longitude-center"] = center.lng;
+  parameters["latitude-center"] = center.lat;
+  render();
+});
+
+document.getElementById("opacity").addEventListener("input", function (e) {
+  if (overlay) overlay.setOpacity(e.target.value);
+});
+
+document.getElementById("reset").addEventListener("click", function () {
+  load(false);
+});
+
+document.getElementById("submit").addEventListener("click", function () {
+  fetch("/data/update" + imagePath, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(parameters)
+  })
+    .then(function (response) {
+      if (!response.ok) throw new Error("update failed: " + response.status);
+      status("submitted at " + new Date().toLocaleTimeString());
+    })
+    .catch(function (e) { status(e.message); });
+});
+
+load(true);
+</script>
+</body>
+</html>
