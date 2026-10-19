@@ -393,4 +393,5 @@ Record dated decisions and findings here.
   - zoom 22 stays on whether or not `tile` is given.
 - 2026-10-19: Added the "Public repository" note: no personal data in
   committed files. Removed the real image path, coordinates and dataset name
-  from this file. Commit 4fe4b3a (already pushed) still contains them.
+  from this file. Commit 4fe4b3a, which contained them, was amended to
+  e126486 and force-pushed.
